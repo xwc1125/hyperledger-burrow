@@ -1,5 +1,7 @@
 # [Hyperledger Burrow](https://github.com/hyperledger/burrow) Changelog
-## [Unreleased]
+## [0.26.3] - 2019-07-09
+### Fixed
+- [Dump] EVM events were not dumped if no height was provided to burrow dump remote commandline
 
 
 ## [0.26.2] - 2019-06-19
@@ -507,7 +509,7 @@ This release marks the start of Eris-DB as the full permissioned blockchain node
   - [Blockchain] Fix getBlocks to respect block height cap.
 
 
-[Unreleased]: https://github.com/hyperledger/burrow/compare/v0.26.2...HEAD
+[0.26.3]: https://github.com/hyperledger/burrow/compare/v0.26.2...v0.26.3
 [0.26.2]: https://github.com/hyperledger/burrow/compare/v0.26.1...v0.26.2
 [0.26.1]: https://github.com/hyperledger/burrow/compare/v0.26.0...v0.26.1
 [0.26.0]: https://github.com/hyperledger/burrow/compare/v0.25.1...v0.26.0
