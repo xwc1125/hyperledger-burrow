@@ -52,11 +52,11 @@ func NewDumper(state *state.State, blockchain bcm.BlockchainInfo, logger *loggin
 }
 
 func (ds *Dumper) Transmit(stream Sender, startHeight, endHeight uint64, options Option) error {
-	height := endHeight
-	if height <= 0 {
-		height = ds.blockchain.LastBlockHeight()
+	lastHeight := ds.blockchain.LastBlockHeight()
+	if endHeight == 0 || endHeight > lastHeight {
+		endHeight = lastHeight
 	}
-	st, err := ds.state.LoadHeight(height)
+	st, err := ds.state.LoadHeight(endHeight)
 	if err != nil {
 		return err
 	}
@@ -64,7 +64,7 @@ func (ds *Dumper) Transmit(stream Sender, startHeight, endHeight uint64, options
 	if options.Enabled(Accounts) {
 		ds.logger.InfoMsg("Dumping accounts")
 		err = st.IterateAccounts(func(acc *acm.Account) error {
-			err = stream.Send(&Dump{Height: height, Account: acc})
+			err = stream.Send(&Dump{Height: endHeight, Account: acc})
 			if err != nil {
 				return err
 			}
@@ -85,7 +85,7 @@ func (ds *Dumper) Transmit(stream Sender, startHeight, endHeight uint64, options
 
 			if len(storage.Storage) > 0 {
 				return stream.Send(&Dump{
-					Height:         height,
+					Height:         endHeight,
 					AccountStorage: &storage,
 				})
 			}
@@ -101,7 +101,7 @@ func (ds *Dumper) Transmit(stream Sender, startHeight, endHeight uint64, options
 	if options.Enabled(Names) {
 		ds.logger.InfoMsg("Dumping names")
 		err = st.IterateNames(func(entry *names.Entry) error {
-			return stream.Send(&Dump{Height: height, Name: entry})
+			return stream.Send(&Dump{Height: endHeight, Name: entry})
 		})
 		if err != nil {
 			return err
