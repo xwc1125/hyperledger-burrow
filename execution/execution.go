@@ -45,6 +45,7 @@ func (f ExecutorFunc) Execute(txEnv *txs.Envelope) (*exec.TxExecution, error) {
 
 type ExecutorState interface {
 	Update(updater func(ws state.Updatable) error) (hash []byte, version int64, err error)
+	LastStoredHeight() (uint64, error)
 	acmstate.IterableReader
 	acmstate.MetadataReader
 	names.Reader
@@ -52,7 +53,6 @@ type ExecutorState interface {
 	proposal.Reader
 	validator.IterableReader
 }
-
 type BatchExecutor interface {
 	// Provides access to write lock for a BatchExecutor so reads can be prevented for the duration of a commit
 	sync.Locker
@@ -105,14 +105,14 @@ var _ BatchExecutor = (*executor)(nil)
 
 // Wraps a cache of what is variously known as the 'check cache' and 'mempool'
 func NewBatchChecker(backend ExecutorState, params Params, blockchain engine.Blockchain, logger *logging.Logger,
-	options ...Option) BatchExecutor {
+	options ...Option) (BatchExecutor, error) {
 
 	return newExecutor("CheckCache", false, params, backend, blockchain, nil,
 		logger.WithScope("NewBatchExecutor"), options...)
 }
 
 func NewBatchCommitter(backend ExecutorState, params Params, blockchain engine.Blockchain, emitter *event.Emitter,
-	logger *logging.Logger, options ...Option) BatchCommitter {
+	logger *logging.Logger, options ...Option) (BatchCommitter, error) {
 
 	return newExecutor("CommitCache", true, params, backend, blockchain, emitter,
 		logger.WithScope("NewBatchCommitter"), options...)
@@ -120,7 +120,12 @@ func NewBatchCommitter(backend ExecutorState, params Params, blockchain engine.B
 }
 
 func newExecutor(name string, runCall bool, params Params, backend ExecutorState, blockchain engine.Blockchain,
-	emitter *event.Emitter, logger *logging.Logger, options ...Option) *executor {
+	emitter *event.Emitter, logger *logging.Logger, options ...Option) (*executor, error) {
+	// We need to track the last block stored in state
+	predecessor, err := backend.LastStoredHeight()
+	if err != nil {
+		return nil, err
+	}
 	exe := &executor{
 		runCall:          runCall,
 		params:           params,
@@ -133,7 +138,8 @@ func newExecutor(name string, runCall bool, params Params, backend ExecutorState
 		validatorCache:   validator.NewCache(backend),
 		emitter:          emitter,
 		block: &exec.BlockExecution{
-			Height: blockchain.LastBlockHeight() + 1,
+			Height:            blockchain.LastBlockHeight() + 1,
+			PredecessorHeight: predecessor,
 		},
 		logger: logger.With(structure.ComponentKey, "Executor"),
 	}
@@ -202,7 +208,7 @@ func newExecutor(name string, runCall bool, params Params, backend ExecutorState
 		exe.contexts[k] = v
 	}
 
-	return exe
+	return exe, nil
 }
 
 func (exe *executor) AddContext(ty payload.Type, ctx contexts.Context) *executor {
@@ -291,12 +297,12 @@ func (exe *executor) validateInputsAndStorePublicKeys(txEnv *txs.Envelope) error
 				acc.GetAddress())
 		}
 		// Check sequences
-		if acc.Sequence+1 != uint64(in.Sequence) {
+		if acc.Sequence+1 != in.Sequence {
 			return errors.Errorf(errors.Codes.InvalidSequence, "Error invalid sequence in input %v: input has sequence %d, but account has sequence %d, "+
 				"so expected input to have sequence %d", in, in.Sequence, acc.Sequence, acc.Sequence+1)
 		}
 		// Check amount
-		if acc.Balance < uint64(in.Amount) {
+		if txEnv.Tx.Type() != payload.TypeUnbond && acc.Balance < in.Amount {
 			return errors.Codes.InsufficientFunds
 		}
 		// Check for Input permission
@@ -355,27 +361,27 @@ func (exe *executor) Commit(header *abciTypes.Header) (stateHash []byte, err err
 	// that nothing in the downstream commit process could have failed. At worst we go back one block.
 	hash, version, err := exe.state.Update(func(ws state.Updatable) error {
 		// flush the caches
-		err := exe.stateCache.Flush(ws, exe.state)
+		err := exe.stateCache.Sync(ws)
 		if err != nil {
 			return err
 		}
-		err = exe.metadataCache.Flush(ws, exe.state)
+		err = exe.metadataCache.Sync(ws)
 		if err != nil {
 			return err
 		}
-		err = exe.nameRegCache.Flush(ws, exe.state)
+		err = exe.nameRegCache.Sync(ws)
 		if err != nil {
 			return err
 		}
-		err = exe.nodeRegCache.Flush(ws, exe.state)
+		err = exe.nodeRegCache.Sync(ws)
 		if err != nil {
 			return err
 		}
-		err = exe.proposalRegCache.Flush(ws, exe.state)
+		err = exe.proposalRegCache.Sync(ws)
 		if err != nil {
 			return err
 		}
-		err = exe.validatorCache.Flush(ws, exe.state)
+		err = exe.validatorCache.Sync(ws)
 		if err != nil {
 			return err
 		}
@@ -388,6 +394,12 @@ func (exe *executor) Commit(header *abciTypes.Header) (stateHash []byte, err err
 	if err != nil {
 		return nil, err
 	}
+	// Complete flushing of caches by resetting them to the state we have just committed
+	err = exe.Reset()
+	if err != nil {
+		return nil, err
+	}
+
 	expectedHeight := HeightAtVersion(version)
 	if expectedHeight != height {
 		return nil, fmt.Errorf("expected height at state tree version %d is %d but actual height is %d",
@@ -401,7 +413,9 @@ func (exe *executor) Commit(header *abciTypes.Header) (stateHash []byte, err err
 func (exe *executor) Reset() error {
 	// As with Commit() we do not take the write lock here
 	exe.stateCache.Reset(exe.state)
+	exe.metadataCache.Reset(exe.state)
 	exe.nameRegCache.Reset(exe.state)
+	exe.nodeRegCache.Reset(exe.state)
 	exe.proposalRegCache.Reset(exe.state)
 	exe.validatorCache.Reset(exe.state)
 	return nil
@@ -439,9 +453,18 @@ func (exe *executor) finaliseBlockExecution(header *abciTypes.Header) (*exec.Blo
 	be := exe.block
 	// Set the header when provided
 	be.Header = header
+	// My default the predecessor of the next block is the is the predecessor of the current block
+	// (in case the current block has no transactions - since we do not currently store empty blocks in state, see
+	// /execution/state/events.go)
+	predecessor := be.PredecessorHeight
+	if len(be.TxExecutions) > 0 {
+		// If the current block has transactions then it will be the predecessor of the next block
+		predecessor = be.Height
+	}
 	// Start new execution for the next height
 	exe.block = &exec.BlockExecution{
-		Height: exe.block.Height + 1,
+		Height:            exe.block.Height + 1,
+		PredecessorHeight: predecessor,
 	}
 	return be, nil
 }

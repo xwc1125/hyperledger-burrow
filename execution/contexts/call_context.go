@@ -72,7 +72,8 @@ func (ctx *CallContext) Precheck() (*acm.Account, *acm.Account, error) {
 	err = inAcc.SubtractFromBalance(ctx.tx.Fee)
 	if err != nil {
 		return nil, nil, errors.Errorf(errors.Codes.InsufficientFunds,
-			"Input account does not have sufficient balance to cover input amount: %v", ctx.tx.Input)
+			"Input account %v (balance: %d) does not have sufficient balance to cover input amount: %v",
+			inAcc.Address, inAcc.Balance, ctx.tx.Input)
 	}
 
 	// Calling a nil destination is defined as requesting contract creation
@@ -184,14 +185,18 @@ func (ctx *CallContext) Deliver(inAcc, outAcc *acm.Account, value uint64) error 
 	var err error
 	txHash := ctx.txe.Envelope.Tx.Hash()
 	gas := ctx.tx.GasLimit
+
+	params := engine.CallParams{
+		Origin: caller,
+		Caller: caller,
+		Callee: callee,
+		Input:  ctx.tx.Data,
+		Value:  value,
+		Gas:    &gas,
+	}
+
 	if len(wcode) != 0 {
-		if createContract {
-			err := native.InitWASMCode(txCache, callee, wcode)
-			if err != nil {
-				return err
-			}
-		}
-		ret, err = wasm.RunWASM(txCache, callee, createContract, wcode, ctx.tx.Data)
+		ret, err = wasm.RunWASM(txCache, params, wcode)
 		if err != nil {
 			// Failure. Charge the gas fee. The 'value' was otherwise not transferred.
 			ctx.Logger.InfoMsg("Error on WASM execution",
@@ -200,6 +205,12 @@ func (ctx *CallContext) Deliver(inAcc, outAcc *acm.Account, value uint64) error 
 			ctx.txe.PushError(errors.Wrap(err, "call error"))
 		} else {
 			ctx.Logger.TraceMsg("Successful execution")
+			if createContract {
+				err := native.InitWASMCode(txCache, callee, ret)
+				if err != nil {
+					return err
+				}
+			}
 			err = ctx.Sync(txCache, metaCache)
 			if err != nil {
 				return err
@@ -209,15 +220,6 @@ func (ctx *CallContext) Deliver(inAcc, outAcc *acm.Account, value uint64) error 
 		// EVM
 		ctx.EVM.SetNonce(txHash)
 		ctx.EVM.SetLogger(ctx.Logger.With(structure.TxHashKey, txHash))
-
-		params := engine.CallParams{
-			Origin: caller,
-			Caller: caller,
-			Callee: callee,
-			Input:  ctx.tx.Data,
-			Value:  value,
-			Gas:    &gas,
-		}
 
 		ret, err = ctx.EVM.Execute(txCache, ctx.Blockchain, ctx.txe, params, code)
 
@@ -231,7 +233,7 @@ func (ctx *CallContext) Deliver(inAcc, outAcc *acm.Account, value uint64) error 
 		} else {
 			ctx.Logger.TraceMsg("Successful execution")
 			if createContract {
-				err := native.InitCode(txCache, callee, ret)
+				err := native.InitEVMCode(txCache, callee, ret)
 				if err != nil {
 					return err
 				}

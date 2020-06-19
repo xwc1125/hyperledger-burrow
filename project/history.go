@@ -47,7 +47,66 @@ func FullVersion() string {
 // To cut a new release add a release to the front of this slice then run the
 // release tagging script: ./scripts/tag_release.sh
 var History relic.ImmutableHistory = relic.NewHistory("Hyperledger Burrow", "https://github.com/hyperledger/burrow").
-	MustDeclareReleases(
+	MustDeclareReleases("0.30.4 - 2020-04-05",
+		`### Added
+- [Build] Added Helm chart
+- [State] Account now has EVMOpcodeBitset field to support upcoming EVM fixes
+
+### Fixed
+- [JS] Github actions release of JS lib
+`,
+		"0.30.3 - 2020-04-05",
+		`### Added
+- [CLI] Made previously internal Solidity Go fixtures compilation available through 'burrow compile'
+- [TS] Default ts client interface implementation
+`,
+		"0.30.2 - 2020-03-13",
+		`### Fixed
+- [RPC] add mutex to callSim and callCode
+`,
+		"0.30.1 - 2020-03-06",
+		`### Fixed
+- [CLI/Tx] Unbond formulation now specifies amount
+`,
+
+		"0.30.0 - 2020-03-05",
+		`### Changed
+- [JS] Partial rewrite of client API in typescript 
+		
+### Fixed
+- [State] Blockchain now commits initial AppHash to avoid IAVL panic
+`,
+		"0.29.8 - 2020-02-11",
+		`### Fixed
+- [ABI] Fix failure to convert crypto.Address to EVMAddress (https://github.com/hyperledger/burrow/issues/1326)
+`,
+		"0.29.7 - 2020-01-27",
+		`### Fixed
+- [Build] Updates to CI build process
+`,
+		"0.29.6 - 2020-01-22",
+		`### Changed
+- [CLI] Burrow dump can now stream to STDOUT
+
+### Fixed
+- [NPM] Burrow-js is now published via an auth token
+`,
+		"0.29.5 - 2019-12-09",
+		`### Security
+- [Tendermint] Upgraded to v0.32.8, checkTxAsync now includes node ID
+		
+### Changed
+- [Vent] Sync every block height to DB and send height notification from _vent_chain table so downstream can check DB sync without --blocks
+- [RPC/Query] GetName now returns GRPC NotFound status (rather than unknown) when a requested key is not set.
+
+### Fixed
+- [Execution] Simulated calls (e.g. query contracts) now returns the height of the state on which the query was run. Useful for downstream sync.
+`,
+		"0.29.4 - 2019-11-22",
+		`### Changed
+- [Build] Move to solidity 0.5.12
+`,
+
 		"0.29.3 - 2019-10-16",
 		`### Changed
 - [NPM] Point package.json to index.js

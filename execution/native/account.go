@@ -29,15 +29,15 @@ func CreateAccount(st acmstate.ReaderWriter, address crypto.Address) error {
 	return st.UpdateAccount(&acm.Account{Address: address})
 }
 
-func InitCode(st acmstate.ReaderWriter, address crypto.Address, code []byte) error {
-	return initCode(st, address, nil, code)
+func InitEVMCode(st acmstate.ReaderWriter, address crypto.Address, code []byte) error {
+	return initEVMCode(st, address, nil, code)
 }
 
 func InitChildCode(st acmstate.ReaderWriter, address crypto.Address, parent crypto.Address, code []byte) error {
-	return initCode(st, address, &parent, code)
+	return initEVMCode(st, address, &parent, code)
 }
 
-func initCode(st acmstate.ReaderWriter, address crypto.Address, parent *crypto.Address, code []byte) error {
+func initEVMCode(st acmstate.ReaderWriter, address crypto.Address, parent *crypto.Address, code []byte) error {
 	acc, err := mustAccount(st, address)
 	if err != nil {
 		return err

@@ -17,9 +17,13 @@ REPO := $(shell pwd)
 
 CI_IMAGE="hyperledger/burrow:ci"
 
+VERSION := $(shell scripts/version.sh)
 # Gets implicit default GOPATH if not set
 GOPATH?=$(shell go env GOPATH)
-BIN_PATH?=${GOPATH}/bin
+BIN_PATH?=$(GOPATH)/bin
+HELM_PATH?=helm/package
+HELM_PACKAGE=$(HELM_PATH)/burrow-$(VERSION).tgz
+ARCH?=linux-amd64
 
 export GO111MODULE=on
 
@@ -69,24 +73,36 @@ megacheck:
 
 # Protobuffing
 
-# Protobuf generated go files
-PROTO_FILES = $(shell find . -path ./node_modules -prune -o -type f -name '*.proto' -print)
+BURROW_TS_PATH = ./js
+PROTO_GEN_TS_PATH = ${BURROW_TS_PATH}/proto
+NODE_BIN = ${BURROW_TS_PATH}/node_modules/.bin
+
+PROTO_FILES = $(shell find . -path $(BURROW_TS_PATH) -prune -o -path ./node_modules -prune -o -type f -name '*.proto' -print)
 PROTO_GO_FILES = $(patsubst %.proto, %.pb.go, $(PROTO_FILES))
-PROTO_GO_FILES_REAL = $(shell find . -path ./vendor -prune -o -type f -name '*.pb.go' -print)
+PROTO_GO_FILES_REAL = $(shell find . -type f -name '*.pb.go' -print)
+PROTO_TS_FILES = $(patsubst %.proto, %.pb.ts, $(PROTO_FILES))
 
 .PHONY: protobuf
-protobuf: $(PROTO_GO_FILES) fix
+protobuf: $(PROTO_GO_FILES) $(PROTO_TS_FILES) fix
 
 # Implicit compile rule for GRPC/proto files (note since pb.go files no longer generated
 # in same directory as proto file this just regenerates everything
 %.pb.go: %.proto
 	protoc -I ./protobuf $< --gogo_out=plugins=grpc:${GOPATH}/src
 
+# Using this: https://github.com/agreatfool/grpc_tools_node_protoc_ts
+%.pb.ts: %.proto
+	$(NODE_BIN)/grpc_tools_node_protoc -I protobuf \
+		--plugin="protoc-gen-ts=$(NODE_BIN)/protoc-gen-ts" \
+		--js_out="import_style=commonjs,binary:${PROTO_GEN_TS_PATH}" \
+		--ts_out="generate_package_definition:${PROTO_GEN_TS_PATH}" \
+		--grpc_out="generate_package_definition:${PROTO_GEN_TS_PATH}" \
+		$<
 
 .PHONY: protobuf_deps
 protobuf_deps:
 	@go get -u github.com/gogo/protobuf/protoc-gen-gogo
-#	@go get -u github.com/golang/protobuf/protoc-gen-go
+	@cd ${BURROW_TS_PATH} && yarn install --only=dev
 
 .PHONY: clean_protobuf
 clean_protobuf:
@@ -114,7 +130,7 @@ commit_hash:
 
 # build all targets in github.com/hyperledger/burrow
 .PHONY: build
-build:	check build_burrow
+build:	check build_burrow build_burrow_debug
 
 # build all targets in github.com/hyperledger/burrow with checks for race conditions
 .PHONY: build_race
@@ -123,19 +139,24 @@ build_race:	check build_race_db
 # build burrow and vent
 .PHONY: build_burrow
 build_burrow: commit_hash
-	go build -ldflags "-extldflags '-static' \
+	go build $(BURROW_BUILD_FLAGS) -ldflags "-extldflags '-static' \
 	-X github.com/hyperledger/burrow/project.commit=$(shell cat commit_hash.txt) \
 	-X github.com/hyperledger/burrow/project.date=$(shell date '+%Y-%m-%d')" \
-	-o ${REPO}/bin/burrow ./cmd/burrow
+	-o ${REPO}/bin/burrow$(BURROW_BUILD_SUFFIX) ./cmd/burrow
 
 # With the sqlite tag - enabling Vent sqlite adapter support, but building a CGO binary
 .PHONY: build_burrow_sqlite
-build_burrow_sqlite: commit_hash
-	go build -tags sqlite \
-	 -ldflags "-extldflags '-static' \
-	-X github.com/hyperledger/burrow/project.commit=$(shell cat commit_hash.txt) \
-	-X github.com/hyperledger/burrow/project.date=$(shell date -I)" \
-	-o ${REPO}/bin/burrow-vent-sqlite ./cmd/burrow
+build_burrow_sqlite: export BURROW_BUILD_SUFFIX=-vent-sqlite
+build_burrow_sqlite: export BURROW_BUILD_FLAGS=-tags sqlite
+build_burrow_sqlite:
+	$(MAKE) build_burrow
+
+# Builds a binary suitable for delve line-by-line debugging through CGO with optimisations (-N) and inling (-l) disabled
+.PHONY: build_burrow_debug
+build_burrow_debug: export BURROW_BUILD_SUFFIX=-debug
+build_burrow_debug: export BURROW_BUILD_FLAGS=-gcflags "all=-N -l"
+build_burrow_debug:
+	$(MAKE) build_burrow
 
 .PHONY: install
 install: build_burrow
@@ -158,30 +179,28 @@ docker_build: check commit_hash
 
 # Solidity fixtures
 .PHONY: solidity
-solidity: $(patsubst %.sol, %.sol.go, $(wildcard ./execution/solidity/*.sol))
+solidity: $(patsubst %.sol, %.sol.go, $(wildcard ./execution/solidity/*.sol)) build_burrow
 
 %.sol.go: %.sol
-	@go run ./deploy/compile/solgo/main.go $^
+	@burrow compile $^
 
 # Solang fixtures
 .PHONY: solang
-solang: $(patsubst %.solang, %.solang.go, $(wildcard ./execution/wasm/*.solang))
+solang: $(patsubst %.solang, %.solang.go, $(wildcard ./execution/wasm/*.solang)) build_burrow
 
 %.solang.go: %.solang
-	@go run ./deploy/compile/solgo/main.go -wasm $^
+	@burrow compile --wasm $^
 
 # node/js
-#
-# Install dependency
-.PHONY: npm_install
-npm_install:
-	npm install
+.PHONY: yarn_install
+yarn_install:
+	@cd ${BURROW_TS_PATH} && yarn install
 
 # Test
 
 .PHONY: test_js
 test_js:
-	./tests/scripts/bin_wrapper.sh npm test
+	@cd ${BURROW_TS_PATH} && yarn test
 
 .PHONY: test
 test: check bin/solc
@@ -198,7 +217,7 @@ test_truffle:
 .PHONY:	test_integration_vent
 test_integration_vent:
 	# Include sqlite adapter with tests - will build with CGO but that's probably fine
-	go test -v -tags 'integration sqlite' ./vent/...
+	go test -count=1 -v -tags 'integration sqlite' ./vent/...
 
 .PHONY:	test_integration_vent_postgres
 test_integration_vent_postgres:
@@ -212,7 +231,7 @@ test_restore:
 
 .PHONY: test_integration
 test_integration:
-	@go test -v -tags integration ./integration/...
+	@go test -count=1 -v -tags integration ./integration/...
 
 .PHONY: test_integration_all
 test_integration_all: test_keys test_deploy test_integration_vent_postgres test_restore test_truffle test_integration
@@ -246,7 +265,7 @@ clean:
 # Print version
 .PHONY: version
 version:
-	@go run ./project/cmd/version/main.go
+	@echo $(VERSION)
 
 # Generate full changelog of all release notes
 CHANGELOG.md: project/history.go project/cmd/changelog/main.go
@@ -267,7 +286,7 @@ tag_release: test check docs build
 
 .PHONY: build_ci_image
 build_ci_image:
-	docker build -t ${CI_IMAGE} -f ./.circleci/Dockerfile .
+	docker build -t ${CI_IMAGE} -f ./.github/Dockerfile .
 
 .PHONY: push_ci_image
 push_ci_image: build_ci_image
@@ -280,3 +299,34 @@ ready_for_pull_request: docs fix
 staticcheck:
 	go get honnef.co/go/tools/cmd/staticcheck
 	staticcheck ./...
+
+# Note --set flag currently needs helm 3 version < 3.0.3 https://github.com/helm/helm/issues/3141 - but hopefully they will reintroduce support
+bin/helm:
+	@echo Downloading helm...
+	mkdir -p bin
+	curl https://get.helm.sh/helm-v3.0.2-$(ARCH).tar.gz | tar xvzO $(ARCH)/helm > bin/helm && chmod +x bin/helm
+
+.PHONY: helm_deps
+helm_deps: bin/helm
+	@bin/helm repo add --username "$(CM_USERNAME)" --password "$(CM_PASSWORD)" chartmuseum $(CM_URL)
+
+.PHONY: helm_test
+helm_test: bin/helm
+	bin/helm dep up helm/burrow
+	bin/helm lint helm/burrow
+
+helm_package: $(HELM_PACKAGE)
+
+$(HELM_PACKAGE): helm_test bin/helm
+	bin/helm package helm/burrow \
+		--version "$(VERSION)" \
+		--app-version "$(VERSION)" \
+		--set "image.tag=$(VERSION)" \
+		--dependency-update \
+		--destination helm/package
+
+.PHONY: helm_push
+helm_push: helm_package
+	@echo pushing helm chart...
+	@curl -u ${CM_USERNAME}:${CM_PASSWORD} \
+		--data-binary "@$(HELM_PACKAGE)" $(CM_URL)/api/charts

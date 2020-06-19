@@ -64,7 +64,7 @@ type Kernel struct {
 	checker        execution.BatchExecutor
 	committer      execution.BatchCommitter
 	keyClient      keys.KeyClient
-	keyStore       *keys.KeyStore
+	keyStore       *keys.FilesystemKeyStore
 	info           string
 	processes      map[string]process.Process
 	listeners      map[string]net.Listener
@@ -128,7 +128,13 @@ func (kern *Kernel) LoadState(genesisDoc *genesis.GenesisDoc) (err error) {
 			return fmt.Errorf("could not build genesis state: %v", err)
 		}
 
-		if err = kern.State.InitialCommit(); err != nil {
+		err = kern.State.InitialCommit()
+		if err != nil {
+			return err
+		}
+
+		err = kern.Blockchain.CommitWithAppHash(kern.State.Hash())
+		if err != nil {
 			return err
 		}
 	}
@@ -136,8 +142,15 @@ func (kern *Kernel) LoadState(genesisDoc *genesis.GenesisDoc) (err error) {
 	kern.Logger.InfoMsg("State loading successful")
 
 	params := execution.ParamsFromGenesis(genesisDoc)
-	kern.checker = execution.NewBatchChecker(kern.State, params, kern.Blockchain, kern.Logger)
-	kern.committer = execution.NewBatchCommitter(kern.State, params, kern.Blockchain, kern.Emitter, kern.Logger, kern.exeOptions...)
+	kern.checker, err = execution.NewBatchChecker(kern.State, params, kern.Blockchain, kern.Logger)
+	if err != nil {
+		return fmt.Errorf("could not create BatchChecker: %w", err)
+	}
+	kern.committer, err = execution.NewBatchCommitter(kern.State, params, kern.Blockchain, kern.Emitter, kern.Logger,
+		kern.exeOptions...)
+	if err != nil {
+		return fmt.Errorf("could not create BatchCommitter: %w", err)
+	}
 	return nil
 }
 
@@ -214,7 +227,7 @@ func (kern *Kernel) SetKeyClient(client keys.KeyClient) {
 }
 
 // SetKeyStore explicitly sets the key store
-func (kern *Kernel) SetKeyStore(store *keys.KeyStore) {
+func (kern *Kernel) SetKeyStore(store *keys.FilesystemKeyStore) {
 	kern.keyStore = store
 }
 

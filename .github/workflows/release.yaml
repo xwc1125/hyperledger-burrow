@@ -1,4 +1,4 @@
-name: Release
+name: release
 on:
   push:
     tags:
@@ -6,46 +6,53 @@ on:
 
 jobs:
   go:
-    name: GoReleaser
+    name: goreleaser
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v1
-    - name: Publish
-      uses: docker://goreleaser/goreleaser
+    - uses: actions/checkout@v2
+    - run: git fetch --prune --unshallow
+    - uses: actions/setup-go@v1
+      with:
+        go-version: 1.13.x
+    - uses: goreleaser/goreleaser-action@v1
+      with:
+        version: latest
+        args: release --release-notes "NOTES.md"
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        args: release --release-notes "NOTES.md"
-      if: success()
 
+# TODO: convert this to yarn equivalent publish
   js:
-    name: NPM
+    name: npm
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v1
+    - uses: actions/checkout@v2
+    - run: git fetch --unshallow --prune
     - uses: actions/setup-node@v1
       with:
         node-version: '12.x'
-    - name: Publish
+    - run: echo ::set-env name=RELEASE_VERSION::${GITHUB_REF:10}
+    - name: publish
       env:
-        NPM_EMAIL: ${{ secrets.NPM_EMAIL }}
-        NPM_USER: ${{ secrets.NPM_USER }}
-        NPM_PASS: ${{ secrets.NPM_PASS }}
+        NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
       run: |
-        git config --global user.name "${NPM_USER}"
-        git config --global user.email "${NPM_EMAIL}"
-        npm install -g npm-cli-login
-        npm-cli-login
-        npm version from-git
+        git config --global user.email "${GITHUB_ACTOR}"
+        git config --global user.name "${GITHUB_ACTOR}"
+        cd js
+        npm install
+        npm run build
+        npm version $RELEASE_VERSION
+        npm config set '//registry.npmjs.org/:_authToken' "${NPM_TOKEN}"
         npm publish --access public .
 
   docker:
-    name: Docker
+    name: docker
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v1
+    - uses: actions/checkout@v2
+    - run: git fetch --unshallow --prune
     - run: make docker_build
-    - name: Publish
+    - name: publish
       env:
         DOCKER_REPO: "hyperledger/burrow"
         DOCKER_USER: ${{ secrets.DOCKER_USER }}
@@ -55,3 +62,15 @@ jobs:
         echo ${DOCKER_PASS} | docker login --username ${DOCKER_USER} --password-stdin
         docker tag ${DOCKER_REPO}:${tag#v} ${DOCKER_REPO}:latest
         docker push ${DOCKER_REPO}
+
+  charts:
+    runs-on: ubuntu-latest
+    env:
+      CM_USERNAME: ${{ secrets.CM_USERNAME }}
+      CM_PASSWORD: ${{ secrets.CM_PASSWORD }}
+      CM_URL:  ${{ secrets.CM_URL }}
+    steps:
+    - uses: actions/checkout@v2
+    - run: git fetch --unshallow --prune
+    - run: make helm_deps
+    - run: make helm_push

@@ -1,12 +1,10 @@
 package native
 
 import (
-	"fmt"
 	"testing"
 
 	"github.com/hyperledger/burrow/acm"
 	"github.com/hyperledger/burrow/acm/acmstate"
-	"github.com/hyperledger/burrow/binary"
 	"github.com/hyperledger/burrow/crypto"
 	"github.com/hyperledger/burrow/execution/engine"
 	"github.com/hyperledger/burrow/execution/errors"
@@ -26,7 +24,7 @@ func TestState_CreateAccount(t *testing.T) {
 	st = acmstate.NewMemoryState()
 	err = CreateAccount(st, address)
 	require.NoError(t, err)
-	err = InitCode(st, address, []byte{1, 2, 3})
+	err = InitEVMCode(st, address, []byte{1, 2, 3})
 	require.NoError(t, err)
 }
 
@@ -79,10 +77,6 @@ func TestState_NewCache(t *testing.T) {
 	})
 	require.Error(t, err)
 	require.Equal(t, errors.Codes.IllegalWrite, errors.GetCode(err))
-}
-
-func blockHashGetter(height uint64) []byte {
-	return binary.LeftPadWord256([]byte(fmt.Sprintf("block_hash_%d", height))).Bytes()
 }
 
 func addToBalance(t testing.TB, st acmstate.ReaderWriter, address crypto.Address, amt uint64) {

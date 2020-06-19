@@ -23,6 +23,7 @@ import (
 	"github.com/hyperledger/burrow/rpc/rpctransact"
 	"github.com/hyperledger/burrow/rpc/web3"
 	"github.com/hyperledger/burrow/txs"
+	"github.com/tendermint/tendermint/p2p"
 	"github.com/tendermint/tendermint/version"
 	hex "github.com/tmthrgd/go-hex"
 )
@@ -105,8 +106,8 @@ func NoConsensusLauncher(kern *Kernel) process.Launcher {
 			// Provide execution accounts against backend state since we will commit immediately
 			accounts := execution.NewAccounts(kern.committer, kern.keyClient, AccountsRingMutexCount)
 			// Elide consensus and use a CheckTx function that immediately commits any valid transaction
-			kern.Transactor = execution.NewTransactor(kern.Blockchain, kern.Emitter, accounts, proc.CheckTx, kern.txCodec,
-				kern.Logger)
+			kern.Transactor = execution.NewTransactor(kern.Blockchain,
+				kern.Emitter, accounts, proc.CheckTx, "", kern.txCodec, kern.Logger)
 			return proc, nil
 		},
 	}
@@ -123,13 +124,18 @@ func TendermintLauncher(kern *Kernel) process.Launcher {
 				return nil, fmt.Errorf("%s cannot get NodeView %v", errHeader, err)
 			}
 
+			var id p2p.ID
+			if ni := nodeView.NodeInfo(); ni != nil {
+				id = p2p.ID(ni.ID.Bytes())
+			}
+
 			kern.Blockchain.SetBlockStore(bcm.NewBlockStore(nodeView.BlockStore()))
 			// Provide execution accounts against checker state so that we can assign sequence numbers
 			accounts := execution.NewAccounts(kern.checker, kern.keyClient, AccountsRingMutexCount)
 			// Pass transactions to Tendermint's CheckTx function for broadcast and consensus
 			checkTx := kern.Node.Mempool().CheckTx
-			kern.Transactor = execution.NewTransactor(kern.Blockchain, kern.Emitter, accounts, checkTx, kern.txCodec,
-				kern.Logger)
+			kern.Transactor = execution.NewTransactor(kern.Blockchain,
+				kern.Emitter, accounts, checkTx, id, kern.txCodec, kern.Logger)
 
 			accountState := kern.State
 			eventsState := kern.State
@@ -297,7 +303,7 @@ func GRPCLauncher(kern *Kernel, conf *rpc.ServerConfig, keyConfig *keys.KeysConf
 			}
 
 			grpcServer := rpc.NewGRPCServer(kern.Logger)
-			var ks *keys.KeyStore
+			var ks *keys.FilesystemKeyStore
 			if kern.keyStore != nil {
 				ks = kern.keyStore
 			}
@@ -305,7 +311,7 @@ func GRPCLauncher(kern *Kernel, conf *rpc.ServerConfig, keyConfig *keys.KeysConf
 
 			if keyConfig.GRPCServiceEnabled {
 				if kern.keyStore == nil {
-					ks = keys.NewKeyStore(keyConfig.KeysDirectory, keyConfig.AllowBadFilePermissions)
+					ks = keys.NewFilesystemKeyStore(keyConfig.KeysDirectory, keyConfig.AllowBadFilePermissions)
 				}
 				keys.RegisterKeysServer(grpcServer, ks)
 			}
